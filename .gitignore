@@ -156,6 +156,9 @@ nautilus/*.yaml
 sbatch*.sh
 
 ### Miscellaneous ###
+# Large installers
+Miniforge3-Linux-x86_64.sh
+
 # W&B
 wandb/
 

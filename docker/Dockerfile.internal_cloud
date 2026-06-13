@@ -12,20 +12,41 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# This Dockerfile is designed for HuggingFace internal CI environments
-# that require GPU access. It starts from an NVIDIA CUDA base image.
+# This Dockerfile extends Dockerfile.internal for cloud-based development.
+# It adds SSH client support and a runtime entrypoint that configures SSH
+# keys from an environment variable, enabling git push/pull inside the container.
+# No secrets are baked into the image — safe to push to Docker Hub.
 
-# docker build -f docker/Dockerfile.internal -t lerobot-internal .
+# Build:
+#   docker build -f docker/Dockerfile.internal_cloud -t lerobot-internal-cloud .
 
-# Configure the base image for CI with GPU access
-ARG CUDA_VERSION=12.8.1
-ARG OS_VERSION=24.04
+# Run (SSH key + repo injected at runtime, never stored in image):
+#   docker run -it --rm --gpus all --shm-size 16gb \
+#     -e SSH_PRIVATE_KEY="$(cat ~/.ssh/id_ed25519)" \
+#     -e GIT_REPO_URL="git@github.com:your-org/lerobot.git" \
+#     -e GIT_BRANCH="main" \
+#     lerobot-internal-cloud
+#
+# Checkout a specific tag (takes priority over GIT_BRANCH):
+#   docker run -it --rm --gpus all --shm-size 16gb \
+#     -e SSH_PRIVATE_KEY="$(cat ~/.ssh/id_ed25519)" \
+#     -e GIT_REPO_URL="git@github.com:your-org/lerobot.git" \
+#     -e GIT_TAG="v1.2.3" \
+#     lerobot-internal-cloud
+
+# Run with volume mount for SSH key instead:
+#   docker run -it --rm --gpus all --shm-size 16gb \
+#     -v ~/.ssh:/home/user_lerobot/.ssh:ro \
+#     -e GIT_REPO_URL="git@github.com:your-org/lerobot.git" \
+#     -e GIT_BRANCH="main" \
+#     lerobot-internal-cloud
+
+ARG CUDA_VERSION=12.4.1
+ARG OS_VERSION=22.04
 FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu${OS_VERSION}
 
-# Define Python version argument
 ARG PYTHON_VERSION=3.12
 
-# Configure environment variables
 ENV DEBIAN_FRONTEND=noninteractive \
     MUJOCO_GL=egl \
     PATH=/lerobot/.venv/bin:$PATH \
@@ -33,12 +54,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TEST_TYPE=single_gpu \
     DEVICE=cuda
 
-# Install Python, system dependencies, and uv (as root)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential git curl \
-    libglib2.0-0 libgl1 libegl1 ffmpeg \
+    software-properties-common build-essential git curl \
+    libglib2.0-0 libgl1-mesa-glx libegl1-mesa ffmpeg \
     libusb-1.0-0-dev speech-dispatcher libgeos-dev portaudio19-dev \
     cmake pkg-config ninja-build \
+    openssh-client \
     libopengl0 \
     libglvnd-dev \
     && add-apt-repository -y ppa:deadsnakes/ppa \
@@ -53,37 +74,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && usermod -aG sudo user_lerobot \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Create application directory and set permissions
 WORKDIR /lerobot
 RUN chown -R user_lerobot:user_lerobot /lerobot
 
-# Switch to the non-root user
 USER user_lerobot
 
-# Environment variables for the testing
 ENV HOME=/home/user_lerobot \
     HF_HOME=/home/user_lerobot/.cache/huggingface \
     HF_LEROBOT_HOME=/home/user_lerobot/.cache/huggingface/lerobot \
     TORCH_HOME=/home/user_lerobot/.cache/torch \
     TRITON_CACHE_DIR=/home/user_lerobot/.cache/triton
 
-# Create the virtual environment
-# We use a virtual environment inside the container—even though the container itself \
-# provides isolation—to ensure compatibility with the cluster and to prevent \
-# issues with MuJoCo and OpenGL drivers.
 RUN uv venv --python python${PYTHON_VERSION}
 
-# Install Python dependencies for caching
-COPY --chown=user_lerobot:user_lerobot setup.py pyproject.toml uv.lock README.md MANIFEST.in ./
-COPY --chown=user_lerobot:user_lerobot src/ src/
+COPY --chown=user_lerobot:user_lerobot pyproject.toml uv.lock ./
 
-RUN uv sync --locked --extra all --no-cache
+RUN uv sync --locked --extra all --no-cache --no-install-project
 
 RUN chmod +x /lerobot/.venv/lib/python${PYTHON_VERSION}/site-packages/triton/backends/nvidia/bin/ptxas
 
-# Copy the rest of the application source code
-# Make sure to have the git-LFS files for testing
-COPY --chown=user_lerobot:user_lerobot . .
+COPY --chown=user_lerobot:user_lerobot docker/entrypoint_cloud.sh /lerobot/entrypoint_cloud.sh
+RUN chmod +x /lerobot/entrypoint_cloud.sh
 
-# Set the default command
+ENTRYPOINT ["/bin/bash", "/lerobot/entrypoint_cloud.sh"]
 CMD ["/bin/bash"]
