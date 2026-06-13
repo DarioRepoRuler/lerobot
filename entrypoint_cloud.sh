@@ -5,7 +5,7 @@ SSH_DIR="${HOME}/.ssh"
 
 if [ -n "${SSH_PRIVATE_KEY}" ]; then
     mkdir -p "${SSH_DIR}"
-    echo "${SSH_PRIVATE_KEY}" > "${SSH_DIR}/id_ed25519"
+    echo "${SSH_PRIVATE_KEY}" | base64 -d > "${SSH_DIR}/id_ed25519"
     chmod 600 "${SSH_DIR}/id_ed25519"
     unset SSH_PRIVATE_KEY
 fi
