@@ -4,19 +4,19 @@
 # BACKGROUND SERVICES START (Docker & Desktop)
 # ==========================================
 
-# 1. Docker Daemon im Hintergrund starten (benötigt --privileged auf Vast)
+# 1. Docker Daemon im Hintergrund starten (braucht als einziges sudo/root)
 sudo dind dockerd > /tmp/dockerd.log 2>&1 &
 
-# 2. VNC Server auf Display :1 starten (Port 5901)
-vncserver :1 -geometry 1280x720 -depth 24 -localhost no
+# 2. VNC Server OHNE sudo starten (nutzt die Passwortdatei von user_lerobot)
+vncserver :5 -geometry 1280x720 -depth 24 -localhost no
 
-# 3. noVNC Proxy starten (Port 6080) um VNC in HTTP-Stream zu wandeln
-/usr/share/novnc/utils/novnc_proxy --vnc localhost:5901 --listen 6080 > /tmp/novnc.log 2>&1 &
+# 3. noVNC über Websockify starten (Der offizielle Ubuntu-Weg)
+# Dies nimmt das VNC-Signal (5905) und wandelt es in eine Webseite auf Port 6080 um
+websockify --web=/usr/share/novnc/ 6080 localhost:5905 > /tmp/novnc.log 2>&1 &
 
 echo "=== Docker, VNC und noVNC (Port 6080) wurden im Hintergrund gestartet ==="
 
-et -e
-
+set -e
 SSH_DIR="${HOME}/.ssh"
 
 if [ -n "${SSH_PRIVATE_KEY}" ]; then

@@ -62,9 +62,10 @@ ENV HOME=/home/user_lerobot \
 
 # VNC Konfiguration für den User vorbereiten
 RUN mkdir -p /home/user_lerobot/.vnc && \
-    echo "vncpassword" | vncpasswd -f > /home/user_lerobot/.vnc/passwd && \
+    (echo "vncpassword" | vncpasswd -f > /home/user_lerobot/.vnc/passwd) || \
+    (mkdir -p /home/user_lerobot/.vnc && echo -ne "\x0c\xf7\xec\x0f\xa7\x71\xa7\x6f" > /home/user_lerobot/.vnc/passwd) && \
     chmod 600 /home/user_lerobot/.vnc/passwd && \
-    echo "#!/bin/bash\nstartxfce4 &" > /home/user_lerobot/.vnc/xstartup && \
+    printf "#!/bin/bash\nunset SESSION_MANAGER\nunset DBUS_SESSION_BUS_ADDRESS\nexec startxfce4\n" > /home/user_lerobot/.vnc/xstartup && \
     chmod +x /home/user_lerobot/.vnc/xstartup
 
 RUN uv venv --python python${PYTHON_VERSION}
@@ -79,5 +80,5 @@ RUN chmod +x /lerobot/entrypoint_cloud_gui.sh
 
 WORKDIR /lerobot
 
-ENTRYPOINT ["/bin/bash", "/lerobot/entrypoint_cloud.sh"]
+ENTRYPOINT ["/bin/bash", "/lerobot/entrypoint_cloud_gui.sh"]
 CMD ["/bin/bash"]
