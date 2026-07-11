@@ -1,20 +1,14 @@
 #!/bin/bash
 
 # ==========================================
-# BACKGROUND SERVICES START (Docker & Desktop)
+# BACKGROUND SERVICES START
 # ==========================================
 
 # 1. Docker Daemon im Hintergrund starten (braucht als einziges sudo/root)
+# (Hinweis: Damit das auf Vast.ai klappt, muss das Image oft besondere Rechte haben)
 sudo dind dockerd > /tmp/dockerd.log 2>&1 &
 
-# 2. VNC Server OHNE sudo starten (nutzt die Passwortdatei von user_lerobot)
-vncserver :5 -geometry 1280x720 -depth 24 -localhost no
-
-# 3. noVNC über Websockify starten (Der offizielle Ubuntu-Weg)
-# Dies nimmt das VNC-Signal (5905) und wandelt es in eine Webseite auf Port 6080 um
-websockify --web=/usr/share/novnc/ 6080 localhost:5905 > /tmp/novnc.log 2>&1 &
-
-echo "=== Docker, VNC und noVNC (Port 6080) wurden im Hintergrund gestartet ==="
+echo "=== Docker Daemon wurde im Hintergrund gestartet (Headless Mode) ==="
 
 set -e
 SSH_DIR="${HOME}/.ssh"

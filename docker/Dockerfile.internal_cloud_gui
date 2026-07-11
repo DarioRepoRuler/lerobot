@@ -9,25 +9,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PATH=/lerobot/.venv/bin:$PATH \
     CUDA_VISIBLE_DEVICES=0 \
     TEST_TYPE=single_gpu \
-    DEVICE=cuda
+    DEVICE=cuda \
+    # Isaac Sim EULAs automatisch akzeptieren
+    ACCEPT_EULA=Y \
+    PRIVACY_CONSENT=Y
 
-# System updaten und Basistools + Grafische Pakete (XFCE, VNC, noVNC) installieren
-# System updaten und Basistools + Grafische Pakete (XFCE, VNC, noVNC) installieren
+# 1. System updaten und Headless-Tools installieren (VNC & XFCE WURDEN ENTFERNT)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     software-properties-common build-essential git curl \
     libglib2.0-0 libgl1-mesa-glx libegl1-mesa ffmpeg \
     libusb-1.0-0-dev speech-dispatcher libgeos-dev portaudio19-dev \
-    cmake pkg-config ninja-build \
-    openssh-client \
-    libopengl0 \
-    libglvnd-dev \
-    # === GEÄNDERTE/OPTIMIERTE DESKTOP-PAKETE FÜR UBUNTU 22.04 ===
-    xfce4 xfce4-goodies \
-    tigervnc-standalone-server tigervnc-tools \
-    novnc websockify dbus-x11 xfonts-base \
+    cmake pkg-config ninja-build openssh-client \
+    libopengl0 libglvnd-dev \
+    # --- Isaac Sim / Vulkan / EGL Headless Abhängigkeiten ---
+    libvulkan1 vulkan-tools libxcursor1 libxrandr2 libxinerama1 libx11-xcb1 libxi6 \
     sudo ca-certificates gnupg lsb-release \
     && rm -rf /var/lib/apt/lists/*
 
+# (Optional: Docker-in-Docker Setup beibehalten, falls es für andere Dinge gebraucht wird)
 RUN mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
@@ -35,7 +34,7 @@ RUN mkdir -p /etc/apt/keyrings && \
     apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-# Python und uv wie gewohnt installieren
+# 2. Python und UV installieren
 RUN add-apt-repository -y ppa:deadsnakes/ppa \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -60,25 +59,25 @@ ENV HOME=/home/user_lerobot \
     TORCH_HOME=/home/user_lerobot/.cache/torch \
     TRITON_CACHE_DIR=/home/user_lerobot/.cache/triton
 
-# VNC Konfiguration für den User vorbereiten
-RUN mkdir -p /home/user_lerobot/.vnc && \
-    (echo "vncpassword" | vncpasswd -f > /home/user_lerobot/.vnc/passwd) || \
-    (mkdir -p /home/user_lerobot/.vnc && echo -ne "\x0c\xf7\xec\x0f\xa7\x71\xa7\x6f" > /home/user_lerobot/.vnc/passwd) && \
-    chmod 600 /home/user_lerobot/.vnc/passwd && \
-    printf "#!/bin/bash\nunset SESSION_MANAGER\nunset DBUS_SESSION_BUS_ADDRESS\nexec startxfce4\n" > /home/user_lerobot/.vnc/xstartup && \
-    chmod +x /home/user_lerobot/.vnc/xstartup
-
+# 3. Das gemeinsame Python Environment erstellen
 RUN uv venv --python python${PYTHON_VERSION}
 
 COPY --chown=user_lerobot:user_lerobot pyproject.toml uv.lock ./
+# LeRobot Abhängigkeiten installieren
 RUN uv sync --locked --extra all --no-cache --no-install-project
+
+# Visualisierungstool Mujoco
+RUN uv pip install mujoco-python-viewer meshcat
+
+# Isaac Sim 6 für Python 3.12 nativ hinzufügen
+RUN uv pip install "isaacsim[all,extscache]==6.0.1.0" --extra-index-url https://pypi.nvidia.com --index-strategy unsafe-best-match --prerelease=allow
 
 RUN chmod +x /lerobot/.venv/lib/python${PYTHON_VERSION}/site-packages/triton/backends/nvidia/bin/ptxas
 
+# (Cloud GUI Entrypoint kann bleiben, wird aber eigentlich nicht mehr zwingend benötigt)
 COPY --chown=user_lerobot:user_lerobot docker/entrypoint_cloud_gui.sh /lerobot/entrypoint_cloud_gui.sh
 RUN chmod +x /lerobot/entrypoint_cloud_gui.sh
 
 WORKDIR /lerobot
 
-ENTRYPOINT ["/bin/bash", "/lerobot/entrypoint_cloud_gui.sh"]
-CMD ["/bin/bash"]
+ENTRYPOINT ["/bin/bash", "-c", "source /lerobot/.venv/bin/activate && exec /bin/bash"]
