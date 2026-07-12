@@ -130,13 +130,13 @@ Go to the Vast.ai Console ([https://console.vast.ai/account/](https://console.va
 For compliance reasons, only select providers from the "Secure Cloud" category located in Europe (EU) in the search filters.
 
 ### 2.4 Start Instance (CLI Command)
-Before starting an instance on Vast.ai, you need to adjust the template. Here is the [link](https://cloud.vast.ai?ref_id=575083&template_id=ad4cab34ff262489ca0e06eaa2fd2aca) to the Vast.ai template to easily integrate it into the environment.
+Before starting an instance on Vast.ai, you need to adjust the template. Here is the [link](https://cloud.vast.ai?ref_id=575083&template_id=51bd439e914e33c2064c1b72df2cbe70) to the Vast.ai template to easily integrate it into the environment.
 
 The final command for the Vast.ai instance in the terminal window should ultimately look like this:
 
 ```bash
 vastai create instance <OFFER_ID> \
-  --image docker1dario/lerobot-internal_cloud:latest \
+  --image docker1dario/lerobot_internal_cloud:v0.1 \
   --env '-p 1111:1111 -p 6006:6006 -p 8080:8080 -e SSH_PRIVATE_KEY="<YOUR_BASE64_DEPLOY_KEY>" -e GIT_REPO_URL="git@github.com:DarioRepoRuler/lerobot.git" -e GIT_BRANCH="cloud_feature"' \
   --onstart-cmd 'git config --global init.defaultBranch main && export GIT_SSH_COMMAND="ssh -i /home/user_lerobot/.ssh/id_ed25519 -o StrictHostKeyChecking=no" && git config --global --add safe.directory /lerobot && /lerobot/entrypoint_cloud.sh' \
   --disk 128 \
