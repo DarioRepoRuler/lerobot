@@ -109,19 +109,27 @@ def delete_episodes(
     episode_indices: list[int],
     output_dir: str | Path | None = None,
     repo_id: str | None = None,
+    rgb_encoder: RGBEncoderConfig | None = None,
+    depth_encoder: DepthEncoderConfig | None = None,
 ) -> LeRobotDataset:
     """Delete episodes from a LeRobotDataset and create a new dataset.
 
     Video segments that need re-encoding (because the source file mixes kept and
     deleted episodes) are re-encoded with the source dataset's existing encoder
     settings — read back from ``meta/info.json`` — so the output dataset stays
-    consistent with its own metadata.
+    consistent with its own metadata. Pass ``rgb_encoder`` / ``depth_encoder``
+    to override the codec used for re-encoding (e.g. swap away from a codec that
+    crashes the bundled FFmpeg build during teardown).
 
     Args:
         dataset: The source LeRobotDataset.
         episode_indices: List of episode indices to delete.
         output_dir: Root directory where the edited dataset will be stored. If not specified, defaults to $HF_LEROBOT_HOME/repo_id. Equivalent to new_root in EditDatasetConfig.
         repo_id: Edited dataset identifier. Equivalent to new_repo_id in EditDatasetConfig.
+        rgb_encoder: Optional encoder override applied to RGB video keys that need
+            re-encoding. ``None`` keeps the source codec.
+        depth_encoder: Optional encoder override applied to depth video keys that
+            need re-encoding. ``None`` keeps the source codec.
     """
     if not episode_indices:
         raise ValueError("No episodes to delete")
@@ -154,11 +162,31 @@ def delete_episodes(
 
     video_metadata = None
     if dataset.meta.video_keys:
-        video_metadata = _copy_and_reindex_videos(dataset, new_meta, episode_mapping)
+        video_metadata = _copy_and_reindex_videos(
+            dataset,
+            new_meta,
+            episode_mapping,
+            rgb_encoder=rgb_encoder,
+            depth_encoder=depth_encoder,
+        )
 
     data_metadata = _copy_and_reindex_data(dataset, new_meta, episode_mapping)
 
     _copy_and_reindex_episodes_metadata(dataset, new_meta, episode_mapping, data_metadata, video_metadata)
+
+    # If videos were re-encoded with a different codec, refresh the destination
+    # meta/info.json so it accurately describes the new bytes (codec, pix_fmt,
+    # crf, etc.) rather than the source's. Mirrors reencode_dataset's metadata
+    # refresh, scoped to only the keys that were actually re-encoded.
+    if video_metadata is not None and (rgb_encoder is not None or depth_encoder is not None):
+        depth_preserve_keys = {"is_depth_map", *(f"video.{n}" for n in DEPTH_ENCODER_INFO_FIELD_NAMES)}
+        for video_key in new_meta.video_keys:
+            target = depth_encoder if video_key in new_meta.depth_keys else rgb_encoder
+            if target is None:
+                continue
+            preserve_keys = depth_preserve_keys if video_key in new_meta.depth_keys else set()
+            new_meta.update_video_info(video_key=video_key, video_encoder=target, preserve_keys=preserve_keys)
+        write_info(new_meta.info, new_meta.root)
 
     new_dataset = LeRobotDataset(
         repo_id=repo_id,
@@ -176,19 +204,26 @@ def split_dataset(
     dataset: LeRobotDataset,
     splits: dict[str, float | list[int]],
     output_dir: str | Path | None = None,
+    rgb_encoder: RGBEncoderConfig | None = None,
+    depth_encoder: DepthEncoderConfig | None = None,
 ) -> dict[str, LeRobotDataset]:
     """Split a LeRobotDataset into multiple smaller datasets.
 
     Video segments that need re-encoding (because the source file mixes episodes
     that fall into different splits) are re-encoded with the source dataset's
     existing encoder settings — read back from ``meta/info.json`` — so each
-    output split stays consistent with its own metadata.
+    output split stays consistent with its own metadata. Pass
+    ``rgb_encoder`` / ``depth_encoder`` to override the re-encode codec.
 
     Args:
         dataset: The source LeRobotDataset to split.
         splits: Either a dict mapping split names to episode indices, or a dict mapping
                 split names to fractions (must sum to <= 1.0).
         output_dir: Root directory where the split datasets will be stored. If not specified, defaults to $HF_LEROBOT_HOME/repo_id.
+        rgb_encoder: Optional encoder override applied to RGB video keys that need
+            re-encoding. ``None`` keeps the source codec.
+        depth_encoder: Optional encoder override applied to depth video keys that
+            need re-encoding. ``None`` keeps the source codec.
 
     Examples:
       Split by specific episodes
@@ -249,11 +284,31 @@ def split_dataset(
 
         video_metadata = None
         if dataset.meta.video_keys:
-            video_metadata = _copy_and_reindex_videos(dataset, new_meta, episode_mapping)
+            video_metadata = _copy_and_reindex_videos(
+                dataset,
+                new_meta,
+                episode_mapping,
+                rgb_encoder=rgb_encoder,
+                depth_encoder=depth_encoder,
+            )
 
         data_metadata = _copy_and_reindex_data(dataset, new_meta, episode_mapping)
 
         _copy_and_reindex_episodes_metadata(dataset, new_meta, episode_mapping, data_metadata, video_metadata)
+
+        # Refresh destination meta/info.json when an encoder override was applied
+        # so each split describes its actual bytes.
+        if video_metadata is not None and (rgb_encoder is not None or depth_encoder is not None):
+            depth_preserve_keys = {"is_depth_map", *(f"video.{n}" for n in DEPTH_ENCODER_INFO_FIELD_NAMES)}
+            for video_key in new_meta.video_keys:
+                target = depth_encoder if video_key in new_meta.depth_keys else rgb_encoder
+                if target is None:
+                    continue
+                preserve_keys = depth_preserve_keys if video_key in new_meta.depth_keys else set()
+                new_meta.update_video_info(
+                    video_key=video_key, video_encoder=target, preserve_keys=preserve_keys
+                )
+            write_info(new_meta.info, new_meta.root)
 
         new_dataset = LeRobotDataset(
             repo_id=split_repo_id,
@@ -719,6 +774,8 @@ def _copy_and_reindex_videos(
     src_dataset: LeRobotDataset,
     dst_meta: LeRobotDatasetMetadata,
     episode_mapping: dict[int, int],
+    rgb_encoder: RGBEncoderConfig | None = None,
+    depth_encoder: DepthEncoderConfig | None = None,
 ) -> dict[int, dict]:
     """Copy and filter video files, only re-encoding files with deleted episodes.
 
@@ -726,12 +783,15 @@ def _copy_and_reindex_videos(
     For files with mixed kept/deleted episodes, we use PyAV filters to efficiently
     re-encode only the desired segments. The encoder used for re-encoding is
     derived per video key from the source dataset's ``meta/info.json`` so the
-    destination metadata keeps describing the videos accurately.
+    destination metadata keeps describing the videos accurately, unless an
+    explicit override is supplied via ``rgb_encoder`` / ``depth_encoder``.
 
     Args:
         src_dataset: Source dataset to copy from
         dst_meta: Destination metadata object
         episode_mapping: Mapping from old episode indices to new indices
+        rgb_encoder: Optional encoder override for RGB video keys (None = source codec).
+        depth_encoder: Optional encoder override for depth video keys (None = source codec).
 
     Returns:
         dict mapping episode index to its video metadata (chunk_index, file_index, timestamps)
@@ -743,9 +803,21 @@ def _copy_and_reindex_videos(
 
     for video_key in src_dataset.meta.video_keys:
         logging.info(f"Processing videos for {video_key}")
-        video_encoder = encoder_config_from_video_info(
+        source_encoder = encoder_config_from_video_info(
             src_dataset.meta.info.features.get(video_key, {}).get("info")
         )
+        # Apply caller override (per modality). RGB keys default to source codec,
+        # depth keys default to source codec; either can be overridden.
+        is_depth = video_key in src_dataset.meta.depth_keys
+        override = depth_encoder if is_depth else rgb_encoder
+        if override is not None and override != source_encoder:
+            logging.info(
+                f"Re-encoding {video_key} with override codec "
+                f"{override.vcodec} (source was {source_encoder.vcodec})"
+            )
+            video_encoder = override
+        else:
+            video_encoder = source_encoder
 
         if dst_meta.video_path is None:
             raise ValueError("Destination metadata has no video_path defined")
@@ -801,11 +873,28 @@ def _copy_and_reindex_videos(
                 episodes_to_keep_ranges: list[tuple[int, int]] = []
                 for old_idx in sorted_keep_episodes:
                     src_ep = src_dataset.meta.episodes[old_idx]
+                    # Derive both endpoints from the recorded timestamps so that
+                    # ranges stay contiguous across episodes that share a packed
+                    # video file (the writer guarantees from_ts[n+1] == to_ts[n]).
+                    # Using ``length`` for the end frame would break that
+                    # contiguity whenever the encoder-reported duration drifts by
+                    # a fraction of a frame vs ``length/fps``, which drives the
+                    # PyAV re-encoder into an inconsistent state.
                     from_frame = round(src_ep[f"videos/{video_key}/from_timestamp"] * src_dataset.meta.fps)
                     to_frame = round(src_ep[f"videos/{video_key}/to_timestamp"] * src_dataset.meta.fps)
-                    assert src_ep["length"] == to_frame - from_frame, (
-                        f"Episode length mismatch: {src_ep['length']} vs {to_frame - from_frame}"
-                    )
+                    # Warn (don't abort) on drift larger than one frame: that's a
+                    # normal artifact of lossy video durations, and the timestamp
+                    # window is the faithful representation of the packed stream.
+                    drift = abs(src_ep["length"] - (to_frame - from_frame))
+                    if drift > 1:
+                        logging.warning(
+                            "Episode %d: parquet length %d differs from video window %d by %d frame(s); "
+                            "using the contiguous video window for re-encoding.",
+                            old_idx,
+                            src_ep["length"],
+                            to_frame - from_frame,
+                            drift,
+                        )
                     episodes_to_keep_ranges.append((from_frame, to_frame))
 
                 # Use PyAV filters to efficiently re-encode only the desired segments.

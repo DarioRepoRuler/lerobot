@@ -93,6 +93,7 @@ class RobotClient:
         # Store configuration
         self.config = config
         self.robot = make_robot_from_config(config.robot)
+        self.logger.info(f"Robot type: {self.robot.__class__.__name__} | Robot ID: {self.robot.id}")
         self.robot.connect()
 
         lerobot_features = map_robot_keys_to_lerobot_features(self.robot)
@@ -147,14 +148,14 @@ class RobotClient:
             start_time = time.perf_counter()
             self.stub.Ready(services_pb2.Empty())
             end_time = time.perf_counter()
-            self.logger.debug(f"Connected to policy server in {end_time - start_time:.4f}s")
+            self.logger.info(f"Connected to policy server in {end_time - start_time:.4f}s")
 
             # send policy instructions
             policy_config_bytes = pickle.dumps(self.policy_config)
             policy_setup = services_pb2.PolicySetup(data=policy_config_bytes)
 
             self.logger.info("Sending policy instructions to policy server")
-            self.logger.debug(
+            self.logger.info(
                 f"Policy type: {self.policy_config.policy_type} | "
                 f"Pretrained name or path: {self.policy_config.pretrained_name_or_path} | "
                 f"Device: {self.policy_config.device}"
@@ -175,10 +176,10 @@ class RobotClient:
         self.shutdown_event.set()
 
         self.robot.disconnect()
-        self.logger.debug("Robot disconnected")
+        self.logger.info("Robot disconnected")
 
         self.channel.close()
-        self.logger.debug("Client stopped, channel closed")
+        self.logger.info("Client stopped, channel closed")
 
     def send_observation(
         self,
@@ -195,7 +196,7 @@ class RobotClient:
         start_time = time.perf_counter()
         observation_bytes = pickle.dumps(obs)
         serialize_time = time.perf_counter() - start_time
-        self.logger.debug(f"Observation serialization time: {serialize_time:.6f}s")
+        self.logger.info(f"Observation serialization time: {serialize_time:.6f}s")
 
         try:
             observation_iterator = send_bytes_in_chunks(
@@ -206,7 +207,7 @@ class RobotClient:
             )
             _ = self.stub.SendObservations(observation_iterator)
             obs_timestep = obs.get_timestep()
-            self.logger.debug(f"Sent observation #{obs_timestep} | ")
+            self.logger.info(f"Sent observation #{obs_timestep} | ")
 
             return True
 
@@ -218,7 +219,7 @@ class RobotClient:
         with self.action_queue_lock:
             queue_size = self.action_queue.qsize()
             timestamps = sorted([action.get_timestep() for action in self.action_queue.queue])
-        self.logger.debug(f"Queue size: {queue_size}, Queue contents: {timestamps}")
+        self.logger.info(f"Queue size: {queue_size}, Queue contents: {timestamps}")
         return queue_size, timestamps
 
     def _aggregate_action_queues(
@@ -276,6 +277,7 @@ class RobotClient:
             try:
                 # Use StreamActions to get a stream of actions from the server
                 actions_chunk = self.stub.GetActions(services_pb2.Empty())
+                self.logger.info(f"Received first action in chunk: {pickle.loads(actions_chunk.data)[0].action if len(actions_chunk.data) > 0 else 'N/A'}")
                 if len(actions_chunk.data) == 0:
                     continue  # received `Empty` from server, wait for next call
 
@@ -289,7 +291,7 @@ class RobotClient:
                 # Log device type of received actions
                 if len(timed_actions) > 0:
                     received_device = timed_actions[0].get_action().device.type
-                    self.logger.debug(f"Received actions on device: {received_device}")
+                    self.logger.info(f"Received actions on device: {received_device}")
 
                 # Move actions to client_device (e.g., for downstream planners that need GPU)
                 client_device = self.config.client_device
@@ -297,9 +299,9 @@ class RobotClient:
                     for timed_action in timed_actions:
                         if timed_action.get_action().device.type != client_device:
                             timed_action.action = timed_action.get_action().to(client_device)
-                    self.logger.debug(f"Converted actions to device: {client_device}")
+                    self.logger.info(f"Converted actions to device: {client_device}")
                 else:
-                    self.logger.debug(f"Actions kept on device: {client_device}")
+                    self.logger.info(f"Actions kept on device: {client_device}")
 
                 self.action_chunk_size = max(self.action_chunk_size, len(timed_actions))
 
@@ -308,7 +310,7 @@ class RobotClient:
                     with self.latest_action_lock:
                         latest_action = self.latest_action
 
-                    self.logger.debug(f"Current latest action: {latest_action}")
+                    self.logger.info(f"Current latest action: {latest_action}")
 
                     # Get queue state before changes
                     old_size, old_timesteps = self._inspect_action_queue()
@@ -349,7 +351,7 @@ class RobotClient:
                         f"Incoming action steps: {incoming_timesteps[0]}:{incoming_timesteps[-1]} | "
                         f"Updated action steps: {new_timesteps[0]}:{new_timesteps[-1]}"
                     )
-                    self.logger.debug(
+                    self.logger.info(
                         f"Queue update complete ({queue_update_time:.6f}s) | "
                         f"Before: {old_size} items | "
                         f"After: {new_size} items | "
@@ -379,7 +381,7 @@ class RobotClient:
         get_end = time.perf_counter() - get_start
 
         _performed_action = self.robot.send_action(
-            self._action_tensor_to_action_dict(timed_action.get_action())
+            self._action_tensor_to_action_dict(timed_action.get_action()) 
         )
         with self.latest_action_lock:
             self.latest_action = timed_action.get_timestep()
@@ -388,13 +390,13 @@ class RobotClient:
             with self.action_queue_lock:
                 current_queue_size = self.action_queue.qsize()
 
-            self.logger.debug(
+            self.logger.info(
                 f"Ts={timed_action.get_timestamp()} | "
                 f"Action #{timed_action.get_timestep()} performed | "
                 f"Queue size: {current_queue_size}"
             )
 
-            self.logger.debug(
+            self.logger.info(
                 f"Popping action from queue to perform took {get_end:.6f}s | Queue size: {current_queue_size}"
             )
 
@@ -421,6 +423,8 @@ class RobotClient:
                 observation=raw_observation,
                 timestep=max(latest_action, 0),
             )
+            # self.logger.info(f"OBSERVATION: Captured last motor positions: {latest_action}")
+
 
             obs_capture_time = time.perf_counter() - start_time
 
@@ -431,7 +435,7 @@ class RobotClient:
 
             _ = self.send_observation(observation)
 
-            self.logger.debug(f"QUEUE SIZE: {current_queue_size} (Must go: {observation.must_go})")
+            self.logger.info(f"QUEUE SIZE: {current_queue_size} (Must go: {observation.must_go})")
             if observation.must_go:
                 # must-go event will be set again after receiving actions
                 self.must_go.clear()
@@ -446,7 +450,7 @@ class RobotClient:
                     f"Target: {fps_metrics['target_fps']:.2f}"
                 )
 
-                self.logger.debug(
+                self.logger.info(
                     f"Ts={observation.get_timestamp():.6f} | Capturing observation took {obs_capture_time:.6f}s"
                 )
 
@@ -469,12 +473,14 @@ class RobotClient:
             """Control loop: (1) Performing actions, when available"""
             if self.actions_available():
                 _performed_action = self.control_loop_action(verbose)
+                self.logger.info(f"Performed action: {_performed_action}")
 
             """Control loop: (2) Streaming observations to the remote policy server"""
             if self._ready_to_send_observation():
                 _captured_observation = self.control_loop_observation(task, verbose)
+                self.logger.info(f"Captured observation: {_captured_observation}")
 
-            self.logger.debug(f"Control loop (ms): {(time.perf_counter() - control_loop_start) * 1000:.2f}")
+            self.logger.info(f"Control loop (ms): {(time.perf_counter() - control_loop_start) * 1000:.2f}")
             # Dynamically adjust sleep time to maintain the desired control frequency
             time.sleep(max(0, self.config.environment_dt - (time.perf_counter() - control_loop_start)))
 
